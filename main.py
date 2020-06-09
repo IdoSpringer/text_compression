@@ -10,24 +10,65 @@ import time
 
 
 # read function !DROR! to include '.' and others as words.
-def read_data(fname): #read data
+# def read_data(fname):
+#     data = []
+#     vec = []
+#     text = []
+#     count = len(open(fname).readlines())
+#     idxl = 0
+#     # with open(fname, 'rb') as f:
+#     #     file = f.read()
+#     with open(fname, encoding="utf-8", errors='ignore') as f:
+#         for line in file:
+#             idxl = idxl+1
+#             if line.strip().split():
+#                 vec = vec + line.strip().split()
+#                 text = text + line.strip().split()
+#             else:
+#                 data.append(vec)
+#                 vec = []
+#             print(100*(idxl/count))
+#     vocab = set(text)
+#     return data, vocab
+
+def read_data(fname):
     data = []
     vec = []
     text = []
-    count = len(open(fname).readlines())
-    idxl = 0
-    with open(fname, encoding="utf-8", errors='ignore') as f:
-        for line in f:
-            idxl = idxl+1
-            if not not line.strip().split():
-                vec = vec + line.strip().split()
-                text = text + line.strip().split()
+    count = 0
+    # with open(fname, 'rb') as f:
+    #     file = f.read()
+    #     file = file.decode('utf-8', 'ignore')
+    #     for line in file:
+    #         count += 1
+    #         # if count < 50:
+    #         #     print(line)
+    with open(fname, encoding="ascii", errors="surrogateescape") as file:
+        for line in file:
+            count += 1
+    print('number of lines: ', count)
+    i = 0
+    with open(fname, encoding="ascii", errors="surrogateescape") as file:
+        for line in file:
+            pct = int((i / count) * 100)
+            if i < 5:
+                print(line)
+            i += 1
+            if line.strip().split():
+                vec += line.strip().split()
+                text += line.strip().split()
             else:
                 data.append(vec)
                 vec = []
-            print(100*(idxl/count))
+            # if int((i / count) * 100) > pct:
+            #     print(str(pct + 1) + '%')
     vocab = set(text)
     return data, vocab
+
+
+data, vocab = read_data('dickens.txt')
+print(data[:100])
+print(len(vocab))
 
 # write2text function
 
@@ -246,11 +287,12 @@ class HuffmanLSTM:
 
 
 if __name__ == '__main__':
-    huffmanLSTM = HuffmanLSTM(sys.argv[2])
-    if sys.argv[1] == 'compress':
-        huffman.compress(sys.argv[2])
-    elif sys.argv[1] == 'decompress':
-        huffman.decompress(sys.argv[2])
-    else:
-        print("command not found")
-        exit(0)
+    # huffmanLSTM = HuffmanLSTM(sys.argv[2])
+    # if sys.argv[1] == 'compress':
+    #     huffman.compress(sys.argv[2])
+    # elif sys.argv[1] == 'decompress':
+    #     huffman.decompress(sys.argv[2])
+    # else:
+    #     print("command not found")
+    #     exit(0)
+    pass
