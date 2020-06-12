@@ -18,31 +18,39 @@ class Dictionary(object):
         return len(self.idx2word)
 
 
-class Corpus(object):
-    def __init__(self, path):
-        self.dictionary = Dictionary()
-        self.train = self.tokenize(os.path.join(path, 'train.txt'))
-        self.valid = self.tokenize(os.path.join(path, 'valid.txt'))
-        self.test = self.tokenize(os.path.join(path, 'test.txt'))
+# todo there is no true valid and test...
 
+class Corpus(object):
+    def __init__(self, file):
+        self.dictionary = Dictionary()
+        self.ids = self.tokenize(file)
+        self.train = self.ids
+        self.valid = self.ids
+        self.test = self.ids
+
+    """Tokenizes a text file."""
     def tokenize(self, path):
         def split(word):
             return [char for char in word]
-
-        """Tokenizes a text file."""
         assert os.path.exists(path)
+        # start symbol
+        self.dictionary.add_word('<s>')
         # Add words to the dictionary
-        # with open(path, 'r', encoding="utf8") as f:
         with open(path, encoding="ascii", errors="surrogateescape") as f:
             for line in f:
                 words = split(line.strip()) + ['<eos>']
                 for word in words:
                     self.dictionary.add_word(word)
-
         # Tokenize file content
-        # with open(path, 'r', encoding="utf8") as f:
         with open(path, encoding="ascii", errors="surrogateescape") as f:
             idss = []
+            # start line
+            ids = []
+            # window size
+            k = 10
+            for i in range(k):
+                ids.append(self.dictionary.word2idx['<s>'])
+            idss.append(torch.tensor(ids).type(torch.int64))
             for line in f:
                 words = split(line.strip()) + ['<eos>']
                 ids = []
@@ -50,5 +58,14 @@ class Corpus(object):
                     ids.append(self.dictionary.word2idx[word])
                 idss.append(torch.tensor(ids).type(torch.int64))
             ids = torch.cat(idss)
+        return ids
 
+    def context_tokenize(self, context):
+        idss = []
+        ids = []
+        for word in context:
+            ids.append(self.dictionary.word2idx[word])
+        idss.append(torch.tensor(ids).type(torch.int64))
+        ids = torch.cat(idss)
+        # print(ids)
         return ids
