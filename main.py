@@ -8,79 +8,21 @@ import operator
 import ast
 import sys
 import time
-from data import Corpus
+from data import Corpus, Context, Dictionary
 import torch
+from model import RNNModel
 import argparse
 import torch.nn.functional as F
+import io
 
-# todo remove transformer code
-# todo char batches?
-# todo start symbol in train time (or not? check init_hidden)
 # todo threshold in huffman dictionary before building the tree
-
-# read function !DROR! to include '.' and others as words.
-def read_data_dror(fname):
-    data = []
-    vec = []
-    text = []
-    count = len(open(fname).readlines())
-    idxl = 0
-    # with open(fname, 'rb') as f:
-    #     file = f.read()
-    with open(fname, encoding="utf-8", errors='ignore') as f:
-        for line in file:
-            idxl = idxl+1
-            if line.strip().split():
-                vec = vec + line.strip().split()
-                text = text + line.strip().split()
-            else:
-                data.append(vec)
-                vec = []
-            print(100*(idxl/count))
-    vocab = set(text)
-    return data, vocab
-
-
-def read_data(fname):
-    data = []
-    vec = []
-    text = []
-    count = 0
-    # with open(fname, 'rb') as f:
-    #     file = f.read()
-    #     file = file.decode('utf-8', 'ignore')
-    #     for line in file:
-    #         count += 1
-    #         # if count < 50:
-    #         #     print(line)
-    with open(fname, encoding="ascii", errors="surrogateescape") as file:
-        for line in file:
-            count += 1
-    print('number of lines: ', count)
-    i = 0
-    with open(fname, encoding="ascii", errors="surrogateescape") as file:
-        for line in file:
-            pct = int((i / count) * 100)
-            if i < 5:
-                print(line)
-            i += 1
-            if line.strip().split():
-                vec += line.strip().split()
-                text += line.strip().split()
-            else:
-                data.append(vec)
-                vec = []
-            # if int((i / count) * 100) > pct:
-            #     print(str(pct + 1) + '%')
-    vocab = set(text)
-    return data, vocab
+# todo train and compress end-to-end
 
 
 def read_characters(file):
     chars = []
     vocab = set()
     count = 0
-    # with open(file, encoding='ANSI') as f:
     with open(file, encoding='ascii', errors="surrogateescape") as f:
         while True:
             c = f.read(1)
@@ -88,9 +30,7 @@ def read_characters(file):
             vocab.add(c)
             count += 1
             if not c:
-                print("End of file")
                 break
-            # print "Read a character:", c
     return chars, vocab
 
 
@@ -105,13 +45,6 @@ def check():
         total = sum(boe.values())
         return sum(freq / total * log2(total / freq) for freq in boe.values())
     print(shannon(counts))
-
-# check()
-
-
-# write2text function
-
-# LSTM hoffman
 
 
 class HeapNode:
@@ -130,49 +63,45 @@ class HuffmanCoding:
         self.heap = []
         self.codes = {}
         self.reverse_mapping = {}
+        self.vocab = {}
 
-    # make probability dictionaries with sorted value from low to high !SPRINGER! put here the LSTM model
-    def make_frequency_dict(self, context, model, corpus, device):
+    @staticmethod
+    def make_frequency_dict(context, model, context_map, device):
         model.eval()
-        context_data = train.batchify(corpus.context_tokenize(context), 1, device)
-        # print(context_data.size(0))
+        context_data = train.batchify(context_map.context_tokenize(context), 1, device)
         data, targets = train.get_batch(280, context_data, 0)
-        # print('data:', data)
-        # print('targets:', targets)
-        hidden = model.init_hidden(bsz=1)
-        output, hidden = model(data, hidden)
-        # model returns log softmax
-        preds = output[-1].squeeze().exp().cpu().tolist()
-        hidden = train.repackage_hidden(hidden)
-        assert len(corpus.dictionary.idx2word) == len(preds)
-        probs = {key: prob for key, prob in zip(corpus.dictionary.idx2word, preds)}
-        # counted = dict(collections.Counter(text))
+        with torch.no_grad():
+            hidden = model.init_hidden(bsz=1)
+            output, hidden = model(data, hidden)
+            # model returns log softmax
+            preds = output[-1].squeeze().exp().cpu().tolist()
+            hidden = train.repackage_hidden(hidden)
+        assert len(context_map.dictionary.idx2word) == len(preds)
+        probs = {key: prob for key, prob in zip(context_map.dictionary.idx2word, preds)}
         sort = collections.OrderedDict(
             sorted(
                 probs.items(),
                 key=operator.itemgetter(1),
                 reverse=False))
-        threshold = 1e-3
-        d = {}
-        for key, prob in zip(corpus.dictionary.idx2word, preds):
-            if prob > threshold:
-                d[key] = prob
-        print('d len', len(d))
-        sort = collections.OrderedDict(
-            sorted(
-                d.items(),
-                key=operator.itemgetter(1),
-                reverse=False))
 
-        # sort = sort[:5]
-        # print(sort)
-
-        # dummy = {'a': 0.5, 'b': 0.2, 'c': 0.2, 'd': 0.07, 'e': 0.03}
+        # try threshold - later
+        # threshold = 1e-3
+        # threshold = 0
+        # d = {}
+        # for key, prob in zip(context_map.dictionary.idx2word, preds):
+        #     if prob > threshold:
+        #         d[key] = prob
+        # # print('d len', len(d))
         # sort = collections.OrderedDict(
-        #         sorted(
-        #         dummy.items(),
+        #     sorted(
+        #         d.items(),
         #         key=operator.itemgetter(1),
         #         reverse=False))
+        # for key in sort:
+        #     print(key, sort[key])
+        # exit()
+        # sort = sort[:5]
+        # print(sort)
 
         return sort
 
@@ -186,9 +115,7 @@ class HuffmanCoding:
     def merge_nodes(self):
         while len(self.heap) > 1:
             node1 = heapq.heappop(self.heap)
-            # print('node1', node1.char, node1.freq)
             node2 = heapq.heappop(self.heap)
-            # print('node2', node2.char, node2.freq)
             merge = HeapNode(None, node1.freq + node2.freq)
             merge.left = node1
             merge.right = node2
@@ -199,10 +126,6 @@ class HuffmanCoding:
         if root is None:
             return
         if root.char is not None:
-            # try:
-            #     print(root.char)
-            # except UnicodeEncodeError:
-            #     print('problem char')
             self.codes[root.char] = current_code
             return
         self.encode_helper(root.left, current_code + "0")
@@ -223,7 +146,6 @@ class HuffmanLSTMCompressor:
     def __init__(self, fname):
         self.fname = fname
         self.device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-
 
     """
     padding and eof
@@ -261,6 +183,7 @@ class HuffmanLSTMCompressor:
         pass
 
     def load_model(self, checkpoint='model.pt'):
+        # actually it is reasonable to train one epoch in compress time, make it end-to-end
         with open(checkpoint, 'rb') as f:
             model = torch.load(f).to(self.device)
         model.eval()
@@ -270,13 +193,13 @@ class HuffmanLSTMCompressor:
         start = time.time()
         data, vocab = read_characters(self.fname)
         comp_text = ''
-        corpus = Corpus(filename)
-
+        dictionary = Corpus(filename).dictionary
+        context_map = Context(dictionary)
         # window size
         k = 10
         # actual window size (we predict last character based on previous k)
         k += 1
-        # add start symbols. notice that we also need to add them on training time...
+        # start symbols
         data = ['<s>'] * (k - 1) + data
         # generator
         g = (data[t:t+k] for t in range(len(data) - k + 1))
@@ -284,55 +207,32 @@ class HuffmanLSTMCompressor:
         model = self.load_model()
         for window in g:
             i += 1
-            # print(window)
-            if i > 150:
+            print(i)
+            # first two paragraphs
+            if i > 929:
                 break
-            # predict last char in window based on previous
+            # predict last char in window based on previous 10
             context = window[:-1]
             char = window[-1]
             huffman = HuffmanCoding()
-
-            # !SPRINGER! put here the prediction of the model
-
-            # if i == 147:
-            # it was th... predict 'e' :)
-            prob = huffman.make_frequency_dict(context, model, corpus, self.device)  # !SPRINGER! change it to the form you prefer.
+            prob = huffman.make_frequency_dict(context, model, context_map, self.device)
             huffman.make_heap_node(prob)
             huffman.merge_nodes()
             huffman.encode()
             comp_text += huffman.get_encoded_word(char)
-
-            # comp_text += huffman.get_encoded_word('e')
-            # comp_text += huffman.get_encoded_word('a')
-            # comp_text += huffman.get_encoded_word('b')
-            # comp_text += huffman.get_encoded_word('d')
-            # comp_text += huffman.get_encoded_word('c')
-
-        print(comp_text)
-        exit()
-
         padded_encoded_text = self.pad_encoded_text(comp_text)
-        # is this really necessary? more bits... check remove_padding
-        print(padded_encoded_text)
         byte_array_huff = self.to_byte_array(padded_encoded_text)
-
-        # write header !SPRINGER! we will switch here to the information about the nn-LSTM.
         filename_split = filename.split('.')
-        js = open(filename_split[0] + "_compressed.bin", 'wb')
-        strcode = str(self.codes)
-        js.write(strcode.encode())
-        js.close()
-
-        # append new line for separation
-        append = open(filename_split[0] + "_compressed.bin", 'a')
-        append.write('\n')
-        append.close()
-
-        # append the rest of the "byte array"
-        f = open(filename_split[0] + "_compressed.bin", 'ab')
-        f.write(bytes(byte_array_huff))
-        f.close()
-
+        compressed_filename = filename_split[0] + "_compressed.bin"
+        # write compressed file
+        torch.save({
+            'word2idx': dictionary.word2idx,
+            'idx2word': dictionary.idx2word,
+            'model_state_dict': model.state_dict(),
+            'bytes': bytes(byte_array_huff),
+        }, compressed_filename)
+        # size in bytes
+        print(os.path.getsize(compressed_filename))
         # MISC
         print('Compression Done!')
         get_original_filesize = os.path.getsize(filename)
@@ -362,85 +262,60 @@ class HuffmanLSTMCompressor:
                 current_code = ''
         return decoded_text
 
-    def decompress(self, compressedfile):  # !DROR! finished the decompress.
+    def decompress(self, compressedfile):
         start = time.time()
         filename_split = compressedfile.split('_')
-        # get "header" !SPRINGER! we need to think how to encode/decode the information about LSTM. your call!
-        header = open(compressedfile, 'rb').readline().decode()
-        # header as object literal
-        header = ast.literal_eval(header)
-        # reverse mapping for better performance
-        self.reverse_mapping = {v: k for k, v in header.items()}
-        # get body
-        f = open(compressedfile, 'rb')
-        # get "body" as list.  [1:] because header
-        body = f.readlines()[1:]
-        f.close()
-        bit_string = ""
-        # merge list "body"
-        # flattened the byte array
-        join_body = [item for sub in body for item in sub]
+        checkpoint = torch.load(compressedfile, map_location=self.device)
+        body = checkpoint['bytes']
+        dictionary = Dictionary()
+        dictionary.word2idx = checkpoint['word2idx']
+        dictionary.idx2word = checkpoint['idx2word']
+        context_map = Context(dictionary)
+        ntokens = len(dictionary)
+        model = RNNModel('LSTM', ntokens, 200, 200, 2, dropout=0.2, tie_weights=False)
+        model.load_state_dict(checkpoint['model_state_dict'])
+        model.to(self.device)
+        model.eval()
+        bit_string = ''
+        join_body = list(body)
         for i in join_body:
             bit_string += "{0:08b}".format(i)
         encoded_text = self.remove_padding(bit_string)
         # decompress start here
-        current_code = ""
-        decoded_text = ""
+        current_code = ''
+        decoded_text = ''
+        # we define an initial context
+        # then we predict the initial huffman tree
+        # read bits until we get to a leaf
+        # convert the leaf to a char and add it to decompressed text
+        # update the context and repeat the process
+        context = ['<s>'] * 10
+        def tree_from_context(context):
+            huffman = HuffmanCoding()
+            prob = huffman.make_frequency_dict(context, model, context_map, self.device)
+            huffman.make_heap_node(prob)
+            huffman.merge_nodes()
+            huffman.encode()
+            huffman.reverse_mapping = {v: k for k, v in huffman.codes.items()}
+            return huffman
+        huffman = tree_from_context(context)
         for bit in encoded_text:
             current_code += bit
-            if current_code in self.reverse_mapping:
-                decoded_text += self.reverse_mapping[current_code]
-                current_code = ""
-        write = open(filename_split[0] + "_decompressed.txt", 'w')
-        write.writelines(decoded_text)
-        write.close()
+            if current_code in huffman.reverse_mapping:
+                next_char = huffman.reverse_mapping[current_code]
+                decoded_text += next_char
+                current_code = ''
+                context = context[1:] + [next_char]
+                huffman = tree_from_context(context)
+        # write decompressed file
+        with open(filename_split[0] + "_decompressed.txt", 'w') as f:
+            f.writelines(decoded_text)
         print('Decompression Done!')
         end = time.time()
         print(round((end - start), 3), "s")
 
 
 if __name__ == '__main__':
-    # parser = argparse.ArgumentParser(description='PyTorch Wikitext-2 RNN/LSTM/GRU/Transformer Language Model')
-    # parser.add_argument('--data', type=str, default='./data',
-    #                     help='location of the data corpus')
-    # parser.add_argument('--model', type=str, default='LSTM',
-    #                     help='type of recurrent net (RNN_TANH, RNN_RELU, LSTM, GRU, Transformer)')
-    # parser.add_argument('--emsize', type=int, default=200,
-    #                     help='size of word embeddings')
-    # parser.add_argument('--nhid', type=int, default=200,
-    #                     help='number of hidden units per layer')
-    # parser.add_argument('--nlayers', type=int, default=2,
-    #                     help='number of layers')
-    # parser.add_argument('--lr', type=float, default=0.001,
-    #                     help='initial learning rate')
-    # parser.add_argument('--clip', type=float, default=0.25,
-    #                     help='gradient clipping')
-    # parser.add_argument('--epochs', type=int, default=1,
-    #                     help='upper epoch limit')
-    # parser.add_argument('--batch_size', type=int, default=20, metavar='N',
-    #                     help='batch size')
-    # parser.add_argument('--bptt', type=int, default=280,
-    #                     help='sequence length')
-    # parser.add_argument('--dropout', type=float, default=0.2,
-    #                     help='dropout applied to layers (0 = no dropout)')
-    # parser.add_argument('--tied', action='store_true',
-    #                     help='tie the word embedding and softmax weights')
-    # parser.add_argument('--seed', type=int, default=1111,
-    #                     help='random seed')
-    # parser.add_argument('--cuda', action='store_true',
-    #                     help='use CUDA')
-    # parser.add_argument('--log-interval', type=int, default=200, metavar='N',
-    #                     help='report interval')
-    # parser.add_argument('--save', type=str, default='model.pt',
-    #                     help='path to save the final model')
-    # parser.add_argument('--onnx-export', type=str, default='',
-    #                     help='path to export the final model in onnx format')
-    #
-    # parser.add_argument('--nhead', type=int, default=2,
-    #                     help='the number of heads in the encoder/decoder of the transformer model')
-    #
-    # args = parser.parse_args()
-
     huffmanLSTM = HuffmanLSTMCompressor(sys.argv[2])
     if sys.argv[1] == 'compress':
         huffmanLSTM.compress(sys.argv[2])

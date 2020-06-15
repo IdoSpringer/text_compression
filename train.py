@@ -10,8 +10,7 @@ import torch.optim as optim
 import data
 import model
 
-
-# todo remove val and test, only train loss matters
+# todo L2 loss (fix perplexity), or L1 loss
 
 # Starting from sequential data, batchify arranges the dataset into columns.
 # For instance, with the alphabet as the sequence and batch size 4, we'd get
@@ -38,7 +37,6 @@ def batchify(data, bsz, device):
 
 def repackage_hidden(h):
     """Wraps hidden states in new Tensors, to detach them from their history."""
-
     if isinstance(h, torch.Tensor):
         return h.detach()
     else:
@@ -62,56 +60,32 @@ def get_batch(bptt, source, i):
     return data, target
 
 
-def evaluate(args, model, corpus, data_source):
-    # Turn on evaluation mode which disables dropout.
-    model.eval()
-    total_loss = 0.
-    ntokens = len(corpus.dictionary)
-    if args.model != 'Transformer':
-        eval_batch_size = 10
-        hidden = model.init_hidden(eval_batch_size)
-    with torch.no_grad():
-        for i in range(0, data_source.size(0) - 1, args.bptt):
-            data, targets = get_batch(args.bptt, data_source, i)
-            if args.model == 'Transformer':
-                output = model(data)
-                output = output.view(-1, ntokens)
-            else:
-                output, hidden = model(data, hidden)
-                hidden = repackage_hidden(hidden)
-            total_loss += len(data) * criterion(output, targets).item()
-    return total_loss / (len(data_source) - 1)
-
-
 def train(args, model, corpus):
     # Turn on training mode which enables dropout.
     model.train()
     total_loss = 0.
     start_time = time.time()
     ntokens = len(corpus.dictionary)
-    if args.model != 'Transformer':
-        hidden = model.init_hidden(args.batch_size)
+    hidden = model.init_hidden(args.batch_size)
     for batch, i in enumerate(range(0, train_data.size(0) - 1, args.bptt)):
         data, targets = get_batch(args.bptt, train_data, i)
         # Starting each batch, we detach the hidden state from how it was previously produced.
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         model.zero_grad()
         optimizer.zero_grad()
-        if args.model == 'Transformer':
-            output = model(data)
-            output = output.view(-1, ntokens)
-        else:
-            hidden = repackage_hidden(hidden)
-            output, hidden = model(data, hidden)
-        print(output.size(), targets.size())
-        # loss = criterion(output, targets)
+        hidden = repackage_hidden(hidden)
+        output, hidden = model(data, hidden)
         loss = criterion(output, targets)
-        # print(loss)
+
+        # make one-hot targets for MSE(L2)/L1 loss
+        # onehot_targets = torch.zeros(output.size()).to(device)
+        # for i, target  in enumerate(targets):
+        #     onehot_targets[i, target] = 1
+        # loss = criterion(output, onehot_targets)
+
         loss.backward()
         optimizer.step()
-
         total_loss += loss.item()
-
         if batch % args.log_interval == 0 and batch > 0:
             cur_loss = total_loss / args.log_interval
             elapsed = time.time() - start_time
@@ -164,88 +138,37 @@ if __name__ == '__main__':
                         help='the number of heads in the encoder/decoder of the transformer model')
 
     args = parser.parse_args()
-
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         if not args.cuda:
             print("WARNING: You have a CUDA device, so you should probably run with --cuda")
-
     device = torch.device("cuda:0" if args.cuda else "cpu")
-
-    ###############################################################################
     # Load data
-    ###############################################################################
-
     corpus = data.Corpus(args.data)
-
-    eval_batch_size = 10
     train_data = batchify(corpus.train, args.batch_size, device)
-    val_data = train_data
-    # test_data = batchify(corpus.test, eval_batch_size, device)
-
-    ###############################################################################
     # Build the model
-    ###############################################################################
-
     ntokens = len(corpus.dictionary)
-    if args.model == 'Transformer':
-        model = model.TransformerModel(ntokens, args.emsize, args.nhead, args.nhid, args.nlayers, args.dropout).to(
-            device)
-    else:
-        model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.tied).to(
-            device)
+    model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid,
+                           args.nlayers, args.dropout, args.tied).to(device)
+    criterion = nn.NLLLoss()
 
-    # criterion = nn.NLLLoss()
-    criterion = nn.MSELoss()
+    # criterion = nn.MSELoss()
 
     optimizer = optim.Adam(model.parameters(), lr=args.lr)
-
-    ###############################################################################
     # Training code
-    ###############################################################################
-
     # Loop over epochs.
     lr = args.lr
-    best_val_loss = None
-
     # At any point you can hit Ctrl + C to break out of training early.
     try:
         for epoch in range(1, args.epochs + 1):
             epoch_start_time = time.time()
             train(args, model, corpus)
-            val_loss = evaluate(args, model, corpus, val_data)
             print('-' * 89)
-            print('| end of epoch {:3d} | time: {:5.2f}s | valid loss {:5.2f} | '
-                  'valid ppl {:8.2f}'.format(epoch, (time.time() - epoch_start_time),
-                                             val_loss, math.exp(val_loss)))
-            print('-' * 89)
-            # Save the model if the validation loss is the best we've seen so far.
-            if not best_val_loss or val_loss < best_val_loss:
-                with open(args.save, 'wb') as f:
-                    torch.save(model, f)
-                best_val_loss = val_loss
-            else:
-                # Anneal the learning rate if no improvement has been seen in the validation dataset.
-                lr /= 4.0
+            with open(args.save, 'wb') as f:
+                torch.save(model, f)
+            lr /= 4.0
     except KeyboardInterrupt:
         print('-' * 89)
         print('Exiting from training early')
-
-    # # Load the best saved model.
-    # with open(args.save, 'rb') as f:
-    #     model = torch.load(f)
-    #     # after load the rnn params are not a continuous chunk of memory
-    #     # this makes them a continuous chunk, and will speed up forward pass
-    #     # Currently, only rnn model supports flatten_parameters function.
-    #     if args.model in ['RNN_TANH', 'RNN_RELU', 'LSTM', 'GRU']:
-    #         model.rnn.flatten_parameters()
-    #
-    # # Run on test data.
-    # test_loss = evaluate(args, model, corpus, test_data)
-    # print('=' * 89)
-    # print('| End of training | test loss {:5.2f} | test ppl {:8.2f}'.format(
-    #     test_loss, math.exp(test_loss)))
-    # print('=' * 89)
-
     pass

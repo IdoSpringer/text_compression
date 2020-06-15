@@ -1,7 +1,3 @@
-# what do we want?
-# currently, a language model that cann predict 3 word based on previous 2 words.
-# (HMM can do it, we want LSTM)
-# we will use the prediction scores to make huffman trees for every 2 words.
 import math
 import torch
 import torch.nn as nn
@@ -26,7 +22,6 @@ class RNNModel(nn.Module):
                                  options are ['LSTM', 'GRU', 'RNN_TANH' or 'RNN_RELU']""")
             self.rnn = nn.RNN(ninp, nhid, nlayers, nonlinearity=nonlinearity, dropout=dropout)
         self.decoder = nn.Linear(nhid, ntoken)
-
         # Optionally tie weights as in:
         # "Using the Output Embedding to Improve Language Models" (Press & Wolf 2016)
         # https://arxiv.org/abs/1608.05859
@@ -37,9 +32,7 @@ class RNNModel(nn.Module):
             if nhid != ninp:
                 raise ValueError('When using the tied flag, nhid must be equal to emsize')
             self.decoder.weight = self.encoder.weight
-
         self.init_weights()
-
         self.rnn_type = rnn_type
         self.nhid = nhid
         self.nlayers = nlayers
@@ -56,8 +49,8 @@ class RNNModel(nn.Module):
         output = self.drop(output)
         decoded = self.decoder(output)
         decoded = decoded.view(-1, self.ntoken)
-        # return F.log_softmax(decoded, dim=1), hidden
-        return F.softmax(decoded, dim=1), hidden
+        return F.log_softmax(decoded, dim=1), hidden
+        # return F.softmax(decoded, dim=1), hidden
 
     def init_hidden(self, bsz):
         weight = next(self.parameters())
@@ -66,4 +59,3 @@ class RNNModel(nn.Module):
                     weight.new_zeros(self.nlayers, bsz, self.nhid))
         else:
             return weight.new_zeros(self.nlayers, bsz, self.nhid)
-
