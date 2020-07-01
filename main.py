@@ -1,24 +1,16 @@
-import numpy as np
-import model
 import train
 import os
 import heapq
 import collections
 import operator
-import ast
 import sys
 import time
 from data import Corpus, Context, Dictionary
 import torch
 from model import RNNModel
 import argparse
-import torch.nn.functional as F
-import io
 import torch.optim as optim
 import torch.nn as nn
-
-# todo l1, l2 loss
-# todo experiments! (lots of them on 10000 bytes)
 
 
 def read_characters(file):
@@ -70,7 +62,7 @@ class HuffmanCoding:
     @staticmethod
     def make_frequency_dict(text):
         # fixed Huffman tree (not adaptive)
-        # we will use this to encode unk
+        # we will use this to encode unknowns
         counted = dict(collections.Counter(text))
         sort = collections.OrderedDict(
             sorted(
@@ -95,7 +87,7 @@ class HuffmanCoding:
         if int(threshold):
             # threshold of number of nodes (leafs)
             p_sorted = sorted(probs, key=lambda x: probs[x], reverse=True)
-            filtered = {k: probs[k] for k in p_sorted[:threshold]}
+            filtered = {k: probs[k] for k in p_sorted[:int(threshold)]}
             probs = filtered
             pass
         else:
@@ -192,10 +184,9 @@ class HuffmanLSTMCompressor:
         ntokens = len(corpus.dictionary)
         model = RNNModel(args.model, ntokens, args.emsize, args.nhid,
                                args.nlayers, args.dropout, args.tied).to(self.device)
-        criterion = nn.NLLLoss()
-
+        # criterion = nn.NLLLoss()
         # criterion = nn.MSELoss()
-
+        criterion = self.args.criterion
         optimizer = optim.Adam(model.parameters(), lr=args.lr)
         # Training code
         # Loop over epochs.
@@ -204,7 +195,8 @@ class HuffmanLSTMCompressor:
         try:
             for epoch in range(1, args.epochs + 1):
                 epoch_start_time = time.time()
-                train.train(train_data, args, model, optimizer, criterion, corpus, epoch, lr)
+                train.train(train_data, args, model, optimizer, criterion,
+                            corpus, epoch, lr, self.device)
                 print('-' * 89)
                 with open(args.save, 'wb') as f:
                     torch.save(model, f)
@@ -214,8 +206,8 @@ class HuffmanLSTMCompressor:
             print('Exiting from training early')
         return model
 
-    def load_model(self, checkpoint='model.pt'):
-        # actually it is reasonable to train one epoch in compress time, make it end-to-end
+    def load_model(self):
+        checkpoint = self.args.model_file
         with open(checkpoint, 'rb') as f:
             model = torch.load(f).to(self.device)
         model.eval()
@@ -224,7 +216,6 @@ class HuffmanLSTMCompressor:
     def compress(self, filename, load_model=False):
         start = time.time()
         data, vocab = read_characters(self.fname)
-        # print(len(data))  # 31457486
         comp_text = ''
         dictionary = Corpus(filename).dictionary
         context_map = Context(dictionary)
@@ -252,9 +243,9 @@ class HuffmanLSTMCompressor:
             model.eval()
         for window in g:
             i += 1
-            print(i)
-            if i > 10000:
-                print('unk ratio:', count_unks / i)
+            if i > self.args.limit and not self.args.limit == -1:
+                # print('unk ratio:', count_unks / i)
+                print()
                 print('original size: ', len(count_original_size.encode('ascii')))
                 break
             # predict last char in window based on previous 10
@@ -275,16 +266,17 @@ class HuffmanLSTMCompressor:
                 encoding = '1' + fixed_huffman.get_encoded_word(char)
                 count_unks += 1
             comp_text += encoding
-            # print(encoding)
             # print progress
-            current_pct = i / len(data) * 100
+            if self.args.limit == -1:
+                current_pct = i / len(data) * 100
+            else:
+                current_pct = i / self.args.limit * 100
             if int(current_pct) > pct:
                 pct += 1
                 sys.stdout.write('\r')
                 sys.stdout.write("[%-100s] %d%%" % ('=' * pct, pct))
                 sys.stdout.flush()
         padded_encoded_text = self.pad_encoded_text(comp_text)
-        print('text len: ', len(padded_encoded_text))
         byte_array_huff = self.to_byte_array(padded_encoded_text)
         filename_split = filename.split('.')
         compressed_filename = filename_split[0] + "_compressed.bin"
@@ -306,7 +298,7 @@ class HuffmanLSTMCompressor:
         get_original_filesize = os.path.getsize(filename)
         get_compressed_filesize = os.path.getsize(compressed_filename)
         percentage = (get_compressed_filesize / get_original_filesize) * 100
-        # print(round(percentage, 3), "%")
+        print(round(percentage, 3), "%")
         end = time.time()
         print(round((end - start), 3), "s")
 
@@ -427,6 +419,8 @@ if __name__ == '__main__':
                         help='upper epoch limit')
     parser.add_argument('--batch_size', type=int, default=20, metavar='N',
                         help='batch size')
+    parser.add_argument('--criterion', type=str, default='CE',
+                        help='loss function - CE, L1 or L2')
     parser.add_argument('--bptt', type=int, default=280,
                         help='sequence length')
     parser.add_argument('--dropout', type=float, default=0.2,
@@ -441,21 +435,23 @@ if __name__ == '__main__':
                         help='report interval')
     parser.add_argument('--save', type=str, default='model.pt',
                         help='path to save the final model')
-    parser.add_argument('--threshold', type=float,
+    parser.add_argument('--threshold', type=float, default=1e-2,
                         help='pruning threshold (int or float)')
-    parser.add_argument('--limit', type=int,
-                        help='number of characters to compress/decompress')
+    parser.add_argument('--limit', type=int, default=-1,
+                        help='number of characters to compress/decompress. -1 for no limit')
+    parser.add_argument('--model_file', type=str, default=None,
+                        help='trained model file')
+
     args = parser.parse_args()
     # Set the random seed manually for reproducibility.
     torch.manual_seed(args.seed)
-    # if torch.cuda.is_available():
-    #     if not args.cuda:
-    #         print("WARNING: You have a CUDA device, so you should probably run with --cuda")
     args.device = torch.device('cuda:0' if torch.cuda.is_available() else "cpu")
-    args.threshold = 1e-2
     huffmanLSTM = HuffmanLSTMCompressor(args)
     if args.task == 'compress':
-        huffmanLSTM.compress(args.file, load_model=True)
+        if args.model_file:
+            huffmanLSTM.compress(args.file, load_model=True)
+        else:
+            huffmanLSTM.compress(args.file, load_model=False)
     elif args.task == 'decompress':
         huffmanLSTM.decompress(args.file)
     else:

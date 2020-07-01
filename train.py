@@ -10,7 +10,6 @@ import torch.optim as optim
 import data
 import model
 
-# todo L2 loss (fix perplexity), or L1 loss
 
 # Starting from sequential data, batchify arranges the dataset into columns.
 # For instance, with the alphabet as the sequence and batch size 4, we'd get
@@ -60,10 +59,11 @@ def get_batch(bptt, source, i):
     return data, target
 
 
-def train(train_data, args, model, optimizer, criterion, corpus, epoch, lr):
+def train(train_data, args, model, optimizer, criterion, corpus, epoch, lr, device):
     # Turn on training mode which enables dropout.
     model.train()
     total_loss = 0.
+    total_ce = 0.
     start_time = time.time()
     ntokens = len(corpus.dictionary)
     hidden = model.init_hidden(args.batch_size)
@@ -75,24 +75,35 @@ def train(train_data, args, model, optimizer, criterion, corpus, epoch, lr):
         optimizer.zero_grad()
         hidden = repackage_hidden(hidden)
         output, hidden = model(data, hidden)
-        loss = criterion(output, targets)
-
-        # make one-hot targets for MSE(L2)/L1 loss
-        # onehot_targets = torch.zeros(output.size()).to(device)
-        # for i, target  in enumerate(targets):
-        #     onehot_targets[i, target] = 1
-        # loss = criterion(output, onehot_targets)
-
+        if criterion == 'CE':
+            loss_function = nn.NLLLoss()
+            loss = loss_function(output, targets)
+        else:
+            # make one-hot targets for MSE(L2)/L1 loss
+            onehot_targets = torch.zeros(output.size()).to(device)
+            for i, target  in enumerate(targets):
+                onehot_targets[i, target] = 1
+            if criterion == 'L2':
+                loss_function = nn.MSELoss()
+            elif criterion == 'L1':
+                loss_function = nn.L1Loss()
+            loss = loss_function(output.exp(), onehot_targets)
+        # compute it for perplexity, not always for training
+        ce_loss = nn.NLLLoss()
+        cross_entropy = ce_loss(output, targets)
         loss.backward()
         optimizer.step()
         total_loss += loss.item()
+        total_ce += cross_entropy.item()
         if batch % args.log_interval == 0 and batch > 0:
             cur_loss = total_loss / args.log_interval
+            cur_ce = total_ce / args.log_interval
             elapsed = time.time() - start_time
             print('| epoch {:3d} | {:5d}/{:5d} batches | lr {:02.2f} | ms/batch {:5.2f} | '
                     'loss {:5.2f} | ppl {:8.2f}'.format(
                 epoch, batch, len(train_data) // args.bptt, lr,
-                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_loss)))
+                elapsed * 1000 / args.log_interval, cur_loss, math.exp(cur_ce)))
             total_loss = 0
+            total_ce = 0
             start_time = time.time()
 
